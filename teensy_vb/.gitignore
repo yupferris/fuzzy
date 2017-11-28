@@ -1,0 +1,11 @@
+.dep/
+teensy_vb.eep
+teensy_vb.elf
+teensy_vb.hex
+teensy_vb.lss
+teensy_vb.lst
+teensy_vb.map
+teensy_vb.o
+teensy_vb.sym
+usb_serial.lst
+usb_serial.o

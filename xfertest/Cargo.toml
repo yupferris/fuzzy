@@ -1,0 +1,9 @@
+[package]
+name = "xfertest"
+version = "0.1.0"
+authors = ["ferris <yupferris@gmail.com>"]
+
+[dependencies]
+serialport = "1.0.1"
+rand = "0.3"
+time = "0.1"
