@@ -22,7 +22,7 @@ VB link port pin | Teensy contact | Purpose | Wire color in my setup
 1 | B0 | Control | black
 3 | B1 | Clock | white
 4 | B2 | Data in (to VB, data out from the teensy's perspective) | orange
-8 | B3 | Data out (from VB, data in from the teensy's perspective | blue
+8 | B3 | Data out (from VB, data in from the teensy's perspective) | blue
 
 # license
 
