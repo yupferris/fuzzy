@@ -46,23 +46,24 @@ void sendStr(const char *s)
 uint8_t transferByte(uint8_t sendByte)
 {
     // Initiate transfer
-    //  Bring CONTROL low and CLOCK high, set ddr
-    PORTB = CLOCK;
-    DDRB = CONTROL | CLOCK | DATA_OUT;
+    //  Bring CONTROL/DATA_OUT low
+    //  CLOCK should be high due to external pull-up
+    PORTB = 0;
+    DDRB |= CONTROL | DATA_OUT;
 
     uint8_t receivedByte = 0;
 
     // Transfer 8 bits
     for (int i = 0; i < 8; i++)
     {
-        // Clock low
-        PORTB &= ~CLOCK;
+        // Bring CLOCK low
+        DDRB |= CLOCK;
         // Set DATA_OUT to send bit
         PORTB &= ~DATA_OUT;
         PORTB |= ((sendByte >> (7 - i)) & 1) << DATA_OUT_SHIFT;
         _delay_us(5.5);
-        // Clock high
-        PORTB |= CLOCK;
+        // Release CLOCK high
+        DDRB &= ~CLOCK;
         // Receive bit from DATA_IN
         receivedByte <<= 1;
         receivedByte |= (PINB >> DATA_IN_SHIFT) & 1;
@@ -70,7 +71,7 @@ uint8_t transferByte(uint8_t sendByte)
     }
 
     // Release CONTROL line
-    DDRB = CLOCK | DATA_OUT;
+    DDRB &= ~CONTROL;
 
     return receivedByte;
 }
@@ -142,6 +143,10 @@ int main(void)
     // Turn on LED
     DDRD |= LED;
     PORTD |= LED;
+
+    // Clear PORTB (we'll set what we need when doing our transfers)
+    PORTB = 0;
+    DDRB = 0;
 
     // Initialize USB and wait for host config (may wait forever if powered on with no host connected)
     usb_init();
