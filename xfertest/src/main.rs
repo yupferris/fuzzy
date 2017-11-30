@@ -6,22 +6,35 @@ use serialport::prelude::*;
 
 use rand::Rng;
 
-use time::precise_time_ns;
+//use time::precise_time_ns;
 
 use std::io::{Read, stdout, Write};
 use std::mem::transmute;
-//use std::thread;
-//use std::time::Duration;
+use std::thread;
+use std::time::Duration;
 
+#[derive(Eq, PartialEq)]
 struct Crapsum {
     state: u32,
 }
 
 impl Crapsum {
-    fn new() -> Crapsum {
-        Crapsum {
-            state: 0xfadebabe,
+    fn compute(data: &[u8]) -> Crapsum {
+        let mut ret = Crapsum::new();
+        for byte in data.iter() {
+            ret.update(*byte);
         }
+        ret
+    }
+
+    fn from_state(state: u32) -> Crapsum {
+        Crapsum {
+            state: state,
+        }
+    }
+
+    fn new() -> Crapsum {
+        Crapsum::from_state(0xfadebabe)
     }
 
     fn update(&mut self, byte: u8) {
@@ -37,21 +50,19 @@ fn main() {
     loop {
         // Test echo
         //let packet = vec![0xfa, 0xde, 0xba, 0xbe];
-        let mut rng = rand::thread_rng();
+        /*let mut rng = rand::thread_rng();
         let len = (rng.gen::<u8>() as usize) + 1;
         let mut packet = Vec::with_capacity(len);
-        let mut crapsum = Crapsum::new();
         for _ in 0..len {
-            let byte = rng.gen::<u8>();
-            packet.push(byte);
-            crapsum.update(byte);
+            packet.push(rng.gen::<u8>());
         }
+        let crapsum = Crapsum::compute(&packet);
 
         print!("({}) sending packet ({} bytes, 0x{:08x}) ... ", packet_index, packet.len(), crapsum.state);
         stdout().flush().unwrap();
 
         let start_time = precise_time_ns();
-        let received_packet = vb_transfer_packet(&mut port, &packet);
+        let received_packet = vb_exchange_packet(&mut port, &packet);
         let elapsed_time = precise_time_ns() - start_time;
         let bytes_sec = (((packet.len() + received_packet.len()) as f64) / ((elapsed_time as f64) / 1e9)) as u32;
 
@@ -61,15 +72,141 @@ fn main() {
             println!("ok {}b/s", bytes_sec);
         } else {
             panic!("crapsum didn't match! {:?}", received_packet);
-        }
+        }*/
 
-        packet_index += 1;
+        let message = b"    * This came from the PC you guys!! *    ";
+        let data = message.iter().flat_map(|x| vec![*x, 0].into_iter()).collect::<Vec<_>>();
+
+        let mut rng = rand::thread_rng();
+        let row = rng.gen::<u32>() % 28;
+        let col = rng.gen::<u32>() % 48;
+        let addr = 0x00020000 + (row * 64 + col) * 2;
+
+        print!("({}) sending packet ... ", packet_index);
+        stdout().flush().unwrap();
+
+        fuzzy_write_mem_region(&mut port, addr, &data).unwrap();
+
+        println!("ok");
 
         //thread::sleep(Duration::from_millis(100));
+
+        packet_index += 1;
     }
 }
 
-fn vb_transfer_packet<P: Read + Write>(port: &mut P, packet: &[u8]) -> Vec<u8> {
+enum FuzzyCommand {
+    WriteMemRegion { addr: u32, data: Vec<u8> },
+}
+
+#[derive(Eq, PartialEq)]
+enum FuzzyResponse {
+    OkWithCrapsum(Crapsum),
+}
+
+impl FuzzyResponse {
+    fn parse(data: Vec<u8>) -> Result<FuzzyResponse, FuzzyError> {
+        if data.is_empty() {
+            return Err(FuzzyError::InvalidResponse(data));
+        }
+
+        match data[0] {
+            0x00 => {
+                if data.len() != 5 {
+                    return Err(FuzzyError::InvalidResponse(data));
+                }
+
+                let mut state = 0;
+                for i in 1..5 {
+                    state >>= 8;
+                    state |= (data[i] as u32) << 24;
+                }
+
+                Ok(FuzzyResponse::OkWithCrapsum(Crapsum::from_state(state)))
+            }
+            _ => Err(FuzzyError::InvalidResponse(data))
+        }
+    }
+}
+
+#[derive(Debug)]
+enum FuzzyError {
+    DataEmpty,
+    DataTooLarge,
+    WrongCrapsum,
+    InvalidResponse(Vec<u8>),
+}
+
+fn fuzzy_write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -> Result<(), FuzzyError> {
+    if data.is_empty() {
+        return Err(FuzzyError::DataEmpty);
+    }
+
+    let mut data_offset = 0;
+    loop {
+        let mut packet_len = data.len() - data_offset;
+        if packet_len > 256 - 5 {
+            packet_len = 256 - 5;
+        }
+
+        if packet_len == 0 {
+            break;
+        }
+
+        let addr = addr + (data_offset as u32);
+        let data = data[data_offset..data_offset + packet_len].iter().cloned().collect::<Vec<_>>();
+        
+        let (response, expected_crapsum) = fuzzy_issue_command(port, FuzzyCommand::WriteMemRegion { addr: addr, data: data })?;
+
+        match response {
+            FuzzyResponse::OkWithCrapsum(crapsum) => {
+                if crapsum != expected_crapsum {
+                    return Err(FuzzyError::WrongCrapsum);
+                }
+            }
+        }
+
+        data_offset += packet_len;
+    }
+
+    // TODO: Issue status command, make sure it's OK
+
+    Ok(())
+}
+
+/*fn fuzzy_read_mem_region<P: Read + Write>(port: &mut P, addr: u32) -> Result<Vec<u8>, FuzzyError> {
+    Ok(Vec::new()) // TODO
+}*/
+
+/*fn fuzzy_call<P: Read + Write>(port: &mut P, entry: u32) {
+    // TODO
+}*/
+
+fn fuzzy_issue_command<P: Read + Write>(port: &mut P, command: FuzzyCommand) -> Result<(FuzzyResponse, Crapsum), FuzzyError> {
+    let packet = match command {
+        FuzzyCommand::WriteMemRegion { addr, data } => {
+            if data.is_empty() {
+                return Err(FuzzyError::DataEmpty);
+            }
+
+            if data.len() > 256 - 5 {
+                return Err(FuzzyError::DataTooLarge);
+            }
+
+            let addr_bytes: [u8; 4] = unsafe { transmute(addr.to_le()) };
+
+            vec![0x00].iter()
+                .chain(addr_bytes.iter())
+                .chain(data.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+        }
+    };
+    let packet_crapsum = Crapsum::compute(&packet);
+    FuzzyResponse::parse(vb_exchange_packet(port, &packet)).map(|response| (response, packet_crapsum))
+}
+
+fn vb_exchange_packet<P: Read + Write>(port: &mut P, packet: &[u8]) -> Vec<u8> {
     if packet.len() == 0 {
         panic!("Can't send 0-length packets");
     } else if packet.len() > 256 {

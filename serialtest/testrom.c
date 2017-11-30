@@ -223,6 +223,11 @@ int linkSendPacket(const u8 *packetBuffer, int packetLen)
     return LINK_OK;
 }
 
+static u8 responseBuffer[256];
+static int responseLength;
+
+#define FUZZY_RESPONSE_OK_WITH_CRAPSUM 0x00
+
 int main()
 {
     vbSetColTable();
@@ -290,6 +295,8 @@ int main()
 
     while (1)
     {
+        int i;
+
         // Receive packet
         if (linkReceivePacket() == LINK_ERR)
         {
@@ -297,12 +304,14 @@ int main()
             continue;
         }
 
-        // Some work can be done here, but it's important that we send a response as soon as possible (else the exchange will time out)
         printStr("r");
 
-        // Send packet
-        //  For now we'll just send back the checksum from the received packet
-        if (linkSendPacket((const u8 *)&receivePacketCrapsum, 4) == LINK_ERR)
+        // Send response packet
+        responseBuffer[0] = FUZZY_RESPONSE_OK_WITH_CRAPSUM;
+        for (i = 0; i < 4; i++)
+            responseBuffer[i + 1] = receivePacketCrapsum >> (i << 3);
+
+        if (linkSendPacket(responseBuffer, 5) == LINK_ERR)
         {
             printStr("f");
             continue;
@@ -310,5 +319,26 @@ int main()
 
         // Exchange complete at this point, do whatev's until we're ready to do another exchange
         printStr("s.");
+
+        // Execute command
+        {
+            u32 write_addr;
+            u8 *write_ptr;
+            int write_len;
+            int i;
+
+            write_addr = 0;
+            for (i = 0; i < 4; i++)
+            {
+                write_addr >>= 8;
+                write_addr |= receivePacketBuffer[i + 1] << 24;
+            }
+
+            write_ptr = write_addr;
+            write_len = receivePacketLen - 5;
+
+            for (i = 0; i < write_len; i++)
+                *(write_ptr++) = receivePacketBuffer[i + 5];
+        }
     }
 }
