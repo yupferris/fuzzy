@@ -4,14 +4,15 @@ extern crate time;
 
 use serialport::prelude::*;
 
-use rand::Rng;
+//use rand::Rng;
 
-//use time::precise_time_ns;
+use time::precise_time_ns;
 
+use std::f64::consts::PI;
 use std::io::{Read, stdout, Write};
 use std::mem::transmute;
-use std::thread;
-use std::time::Duration;
+//use std::thread;
+//use std::time::Duration;
 
 #[derive(Eq, PartialEq)]
 struct Crapsum {
@@ -45,6 +46,9 @@ impl Crapsum {
 fn main() {
     let mut port = vb_connect();
 
+    // Total overkill using this kind of timer but I already have it in scope and whatnot.. :D
+    let start_time = precise_time_ns();
+
     // Go!
     let mut packet_index = 0;
     loop {
@@ -74,13 +78,30 @@ fn main() {
             panic!("crapsum didn't match! {:?}", received_packet);
         }*/
 
-        let message = b"    * This came from the PC you guys!! *    ";
-        let data = message.iter().flat_map(|x| vec![*x, 0].into_iter()).collect::<Vec<_>>();
+        /*let message = b"    * This came from the PC you guys!! *    ";
+        let data = message.iter().flat_map(|x| vec![*x, 0].into_iter()).collect::<Vec<_>>();*/
 
-        let mut rng = rand::thread_rng();
+        let time = (precise_time_ns().wrapping_sub(start_time) as f64) / 1e9;
+        let x_flow_time = time * 0.3;
+        let y_flow_time = time * -0.24 + 1.0;
+        let blocks =
+            (0..28).flat_map(|y| {
+                let fy = (y as f64) / 20.0;
+                (0..64).map(move |x| {
+                    let fx = (x as f64) / 20.0;
+                    let x_sinus = ((fx + x_flow_time).sin() + (-(fx * 2.0 * PI + x_flow_time)).sin() * 0.3).sin() * 2.0 * PI;
+                    let y_sinus = ((fy + y_flow_time).sin() + (-(fy * 2.0 * PI + y_flow_time)).sin() * 0.3).sin() * 2.0 * PI;
+                    let chars = [0, 183, 149, 111, 79, 48, 19, 18];
+                    chars[((((x_sinus + y_sinus) * 2.0).sin() * 0.5 + 0.5) * 7.0) as usize]
+                })
+            })
+            .collect::<Vec<_>>();
+        let data = blocks.iter().flat_map(|x| vec![*x, 0].into_iter()).collect::<Vec<_>>();
+
+        /*let mut rng = rand::thread_rng();
         let row = rng.gen::<u32>() % 28;
-        let col = rng.gen::<u32>() % 48;
-        let addr = 0x00020000 + (row * 64 + col) * 2;
+        let col = rng.gen::<u32>() % 48;*/
+        let addr = 0x00020000;// + (row * 64 + col) * 2;
 
         print!("({}) sending packet ... ", packet_index);
         stdout().flush().unwrap();

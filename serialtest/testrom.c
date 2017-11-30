@@ -304,7 +304,7 @@ int main()
             continue;
         }
 
-        printStr("r");
+        //printStr("r");
 
         // Send response packet
         responseBuffer[0] = FUZZY_RESPONSE_OK_WITH_CRAPSUM;
@@ -318,13 +318,14 @@ int main()
         }
 
         // Exchange complete at this point, do whatev's until we're ready to do another exchange
-        printStr("s.");
+        //printStr("s.");
 
         // Execute command
         {
             u32 write_addr;
             u8 *write_ptr;
             int write_len;
+            u8 *read_ptr;
             int i;
 
             write_addr = 0;
@@ -337,8 +338,10 @@ int main()
             write_ptr = write_addr;
             write_len = receivePacketLen - 5;
 
+            read_ptr = receivePacketBuffer + 5;
+
             for (i = 0; i < write_len; i++)
-                *(write_ptr++) = receivePacketBuffer[i + 5];
+                *(write_ptr++) = *(read_ptr++);
         }
     }
 }
