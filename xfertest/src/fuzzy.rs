@@ -9,16 +9,19 @@ pub enum Error {
     Serial(vb_serial::Error),
     DataEmpty,
     DataTooLarge,
+    ProtocolViolation,
     WrongCrapsum,
     InvalidResponse(Vec<u8>),
 }
 
 enum Command {
+    CheckStatus,
     WriteMemRegion { addr: u32, data: Vec<u8> },
 }
 
 #[derive(Eq, PartialEq)]
 enum Response {
+    UnexpectedCommand,
     OkWithCrapsum(Crapsum),
 }
 
@@ -30,6 +33,13 @@ impl Response {
 
         match data[0] {
             0x00 => {
+                if data.len() != 1 {
+                    return Err(Error::InvalidResponse(data));
+                }
+
+                Ok(Response::UnexpectedCommand)
+            }
+            0x01 => {
                 if data.len() != 5 {
                     return Err(Error::InvalidResponse(data));
                 }
@@ -69,6 +79,9 @@ pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -
         let (response, expected_crapsum) = issue_command(port, Command::WriteMemRegion { addr: addr, data: data })?;
 
         match response {
+            Response::UnexpectedCommand => {
+                return Err(Error::ProtocolViolation);
+            }
             Response::OkWithCrapsum(crapsum) => {
                 if crapsum != expected_crapsum {
                     return Err(Error::WrongCrapsum);
@@ -76,16 +89,38 @@ pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -
             }
         }
 
+        let mut status_tries = 0;
+        loop {
+            if let Ok((response, expected_crapsum)) = issue_command(port, Command::CheckStatus) {
+                match response {
+                    Response::OkWithCrapsum(crapsum) => {
+                        if crapsum != expected_crapsum {
+                            return Err(Error::WrongCrapsum);
+                        }
+
+                        break;
+                    }
+                    _ => {
+                        return Err(Error::ProtocolViolation);
+                    }
+                }
+            }
+
+            status_tries += 1;
+            if status_tries >= 5 {
+                return Err(Error::ProtocolViolation);
+            }
+        }
+
         data_offset += packet_len;
     }
-
-    // TODO: Issue status command, make sure it's OK (THIS IS ACTUALLY NECESSARY, WE'VE SEEN IT BREAK NOW!)
 
     Ok(())
 }
 
 fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Response, Crapsum), Error> {
     let packet = match command {
+        Command::CheckStatus => vec![0x00],
         Command::WriteMemRegion { addr, data } => {
             if data.is_empty() {
                 return Err(Error::DataEmpty);
@@ -97,7 +132,7 @@ fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Res
 
             let addr_bytes: [u8; 4] = unsafe { transmute(addr.to_le()) };
 
-            vec![0x00].iter()
+            vec![0x01].iter()
                 .chain(addr_bytes.iter())
                 .chain(data.iter())
                 .cloned()

@@ -226,7 +226,99 @@ int linkSendPacket(const u8 *packetBuffer, int packetLen)
 static u8 responseBuffer[256];
 static int responseLength;
 
-#define FUZZY_RESPONSE_OK_WITH_CRAPSUM 0x00
+#define FUZZY_COMMAND_CHECK_STATUS 0x00
+#define FUZZY_COMMAND_WRITE_MEM_REGION 0x01
+
+#define FUZZY_RESPONSE_UNEXPECTED_COMMAND 0x00
+#define FUZZY_RESPONSE_OK_WITH_CRAPSUM 0x01
+
+int fuzzyRespondUnexpectedCommand()
+{
+    responseBuffer[0] = FUZZY_RESPONSE_UNEXPECTED_COMMAND;
+    return linkSendPacket(responseBuffer, 1);
+}
+
+int fuzzyRespondOkWithCrapsum()
+{
+    int i;
+
+    responseBuffer[0] = FUZZY_RESPONSE_OK_WITH_CRAPSUM;
+    for (i = 0; i < 4; i++)
+        responseBuffer[i + 1] = receivePacketCrapsum >> (i << 3);
+    return linkSendPacket(responseBuffer, 5);
+}
+
+#define COMMAND_OK 0
+#define COMMAND_ERR -1
+
+int commandDispatch()
+{
+    switch (receivePacketBuffer[0])
+    {
+    case FUZZY_COMMAND_CHECK_STATUS:
+        // Send response packet
+        if (fuzzyRespondOkWithCrapsum() == LINK_ERR)
+            return COMMAND_ERR;
+
+        // Exchange complete
+        //printStr("s.");
+
+        return COMMAND_OK;
+
+    case FUZZY_COMMAND_WRITE_MEM_REGION:
+        // Send response packet
+        if (fuzzyRespondOkWithCrapsum() == LINK_ERR)
+            return COMMAND_ERR;
+
+        // Exchange complete
+        //printStr("s.");
+
+        // Execute command
+        {
+            u32 write_addr;
+            u8 *write_ptr;
+            int write_len;
+            u8 *read_ptr;
+            int i;
+
+            write_addr = 0;
+            for (i = 0; i < 4; i++)
+            {
+                write_addr >>= 8;
+                write_addr |= receivePacketBuffer[i + 1] << 24;
+            }
+
+            write_ptr = (u8 *)write_addr;
+            write_len = receivePacketLen - 5;
+
+            read_ptr = receivePacketBuffer + 5;
+
+            for (i = 0; i < write_len; i++)
+                *(write_ptr++) = *(read_ptr++);
+        }
+
+        // Expect check status command
+        while (linkReceivePacket() == LINK_ERR)
+            ;
+
+        //printStr("r");
+
+        if (receivePacketBuffer[0] == FUZZY_COMMAND_CHECK_STATUS)
+        {
+            if (fuzzyRespondOkWithCrapsum() == LINK_ERR)
+                return COMMAND_ERR;
+        }
+        else if (fuzzyRespondUnexpectedCommand() == LINK_ERR)
+            return COMMAND_ERR;
+
+        // Exchange complete
+        //printStr("s.");
+
+        return COMMAND_OK;
+    }
+
+    return COMMAND_ERR;
+}
 
 int main()
 {
@@ -295,8 +387,6 @@ int main()
 
     while (1)
     {
-        int i;
-
         // Receive packet
         if (linkReceivePacket() == LINK_ERR)
         {
@@ -306,42 +396,7 @@ int main()
 
         //printStr("r");
 
-        // Send response packet
-        responseBuffer[0] = FUZZY_RESPONSE_OK_WITH_CRAPSUM;
-        for (i = 0; i < 4; i++)
-            responseBuffer[i + 1] = receivePacketCrapsum >> (i << 3);
-
-        if (linkSendPacket(responseBuffer, 5) == LINK_ERR)
-        {
+        if (commandDispatch() == COMMAND_ERR)
             printStr("f");
-            continue;
-        }
-
-        // Exchange complete at this point, do whatev's until we're ready to do another exchange
-        //printStr("s.");
-
-        // Execute command
-        {
-            u32 write_addr;
-            u8 *write_ptr;
-            int write_len;
-            u8 *read_ptr;
-            int i;
-
-            write_addr = 0;
-            for (i = 0; i < 4; i++)
-            {
-                write_addr >>= 8;
-                write_addr |= receivePacketBuffer[i + 1] << 24;
-            }
-
-            write_ptr = write_addr;
-            write_len = receivePacketLen - 5;
-
-            read_ptr = receivePacketBuffer + 5;
-
-            for (i = 0; i < write_len; i++)
-                *(write_ptr++) = *(read_ptr++);
-        }
     }
 }
