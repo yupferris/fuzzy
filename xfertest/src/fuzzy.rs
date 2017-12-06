@@ -1,15 +1,24 @@
 use crapsum::*;
-use vb_serial::*;
+use vb_serial::{self, exchange_packet};
 
 use std::io::{Read, Write};
 use std::mem::transmute;
 
-pub enum Command {
+#[derive(Debug)]
+pub enum Error {
+    Serial(vb_serial::Error),
+    DataEmpty,
+    DataTooLarge,
+    WrongCrapsum,
+    InvalidResponse(Vec<u8>),
+}
+
+enum Command {
     WriteMemRegion { addr: u32, data: Vec<u8> },
 }
 
 #[derive(Eq, PartialEq)]
-pub enum Response {
+enum Response {
     OkWithCrapsum(Crapsum),
 }
 
@@ -36,14 +45,6 @@ impl Response {
             _ => Err(Error::InvalidResponse(data))
         }
     }
-}
-
-#[derive(Debug)]
-pub enum Error {
-    DataEmpty,
-    DataTooLarge,
-    WrongCrapsum,
-    InvalidResponse(Vec<u8>),
 }
 
 pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -> Result<(), Error> {
@@ -104,5 +105,6 @@ fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Res
         }
     };
     let packet_crapsum = Crapsum::compute(&packet);
-    Response::parse(exchange_packet(port, &packet)).map(|response| (response, packet_crapsum))
+    let received_packet = exchange_packet(port, &packet).map_err(|e| Error::Serial(e))?;
+    Response::parse(received_packet).map(|response| (response, packet_crapsum))
 }

@@ -17,7 +17,7 @@ use std::io::{stdout, Write};
 //use std::time::Duration;
 
 fn main() {
-    let mut port = teensy_vb::connect("COM4");
+    let mut port = teensy_vb::connect("COM4").unwrap();
 
     // Total overkill using this kind of timer but I already have it in scope and whatnot.. :D
     let start_time = precise_time_ns();
@@ -80,10 +80,18 @@ fn main() {
         let col = rng.gen::<u32>() % 48;*/
         let addr = 0x00020000;// + (row * 64 + col) * 2;
 
-        print!("({}) sending packet ... ", packet_index);
+        print!("({}) issuing command ... ", packet_index);
         stdout().flush().unwrap();
 
-        fuzzy::write_mem_region(&mut port, addr, &data).unwrap();
+        loop {
+            match fuzzy::write_mem_region(&mut port, addr, &data) {
+                Ok(_) => break,
+                Err(e) => {
+                    println!("error: {:?}", e);
+                    print!("Retrying ... ");
+                }
+            }
+        }
 
         println!("ok");
 

@@ -1,24 +1,17 @@
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 
-pub fn blocking_read<R: Read>(r: &mut R, buf: &mut [u8]) {
-    let mut read_offset = 0;
-
-    loop {
-        if let Ok(num_bytes) = r.read(&mut buf[read_offset..]) {
-            read_offset += num_bytes;
-            if read_offset == buf.len() {
-                break;
-            }
-        }
-        //thread::sleep(Duration::from_millis(1));
-    }
+#[derive(Debug)]
+pub enum Error {
+    Io(io::Error),
+    DataEmpty,
+    DataTooLarge,
 }
 
-pub fn exchange_packet<P: Read + Write>(port: &mut P, packet: &[u8]) -> Vec<u8> {
+pub fn exchange_packet<P: Read + Write>(port: &mut P, packet: &[u8]) -> Result<Vec<u8>, Error> {
     if packet.len() == 0 {
-        panic!("Can't send 0-length packets");
+        return Err(Error::DataEmpty);
     } else if packet.len() > 256 {
-        panic!("Can't send packets larger than 256 bytes");
+        return Err(Error::DataTooLarge);
     }
 
     // Send packet
@@ -28,17 +21,18 @@ pub fn exchange_packet<P: Read + Write>(port: &mut P, packet: &[u8]) -> Vec<u8> 
 
     // Receive packet
     //  Receive length
-    let received_len = (blocking_read_byte(port) as usize) + 1;
+    let received_len = (read_byte(port)? as usize) + 1;
 
     //  Receive data bytes
     let mut received_packet = vec![0; received_len];
-    blocking_read(port, &mut received_packet);
-
-    received_packet
+    port.read(&mut received_packet)
+        .map(|_| received_packet)
+        .map_err(|e| Error::Io(e))
 }
 
-fn blocking_read_byte<R: Read>(r: &mut R) -> u8 {
+fn read_byte<R: Read>(r: &mut R) -> Result<u8, Error> {
     let mut buf = vec![0];
-    blocking_read(r, &mut buf);
-    buf[0]
+    r.read(&mut buf)
+        .map(|_| buf[0])
+        .map_err(|e| Error::Io(e))
 }
