@@ -224,13 +224,15 @@ int linkSendPacket(const u8 *packetBuffer, int packetLen)
 }
 
 static u8 responseBuffer[256];
-static int responseLength;
 
 #define FUZZY_COMMAND_CHECK_STATUS 0x00
 #define FUZZY_COMMAND_WRITE_MEM_REGION 0x01
+#define FUZZY_COMMAND_READ_MEM_REGION 0x02
+#define FUZZY_COMMAND_READ_MEM_REGION_DATA 0x03
 
 #define FUZZY_RESPONSE_UNEXPECTED_COMMAND 0x00
 #define FUZZY_RESPONSE_OK_WITH_CRAPSUM 0x01
+#define FUZZY_RESPONSE_READ_MEM_REGION_DATA 0x02
 
 int fuzzyRespondUnexpectedCommand()
 {
@@ -275,26 +277,26 @@ int commandDispatch()
 
         // Execute command
         {
-            u32 write_addr;
-            u8 *write_ptr;
-            int write_len;
-            u8 *read_ptr;
+            u32 writeAddr;
+            u8 *writePtr;
+            int writeLen;
+            u8 *readPtr;
             int i;
 
-            write_addr = 0;
+            writeAddr = 0;
             for (i = 0; i < 4; i++)
             {
-                write_addr >>= 8;
-                write_addr |= receivePacketBuffer[i + 1] << 24;
+                writeAddr >>= 8;
+                writeAddr |= receivePacketBuffer[i + 1] << 24;
             }
 
-            write_ptr = (u8 *)write_addr;
-            write_len = receivePacketLen - 5;
+            writePtr = (u8 *)writeAddr;
+            writeLen = receivePacketLen - 5;
 
-            read_ptr = receivePacketBuffer + 5;
+            readPtr = receivePacketBuffer + 5;
 
-            for (i = 0; i < write_len; i++)
-                *(write_ptr++) = *(read_ptr++);
+            for (i = 0; i < writeLen; i++)
+                *(writePtr++) = *(readPtr++);
         }
 
         // Expect check status command
@@ -315,6 +317,59 @@ int commandDispatch()
         //printStr("s.");
 
         return COMMAND_OK;
+
+    case FUZZY_COMMAND_READ_MEM_REGION:
+        {
+            u32 readAddr;
+            u8 *readPtr;
+            int readLen;
+            u8 *writePtr;
+            int i;
+
+            // Send response packet
+            if (fuzzyRespondOkWithCrapsum() == LINK_ERR)
+                return COMMAND_ERR;
+
+            // Exchange complete
+            //printStr("s.");
+
+            // Execute command
+            responseBuffer[0] = FUZZY_RESPONSE_READ_MEM_REGION_DATA;
+
+            readAddr = 0;
+            for (i = 0; i < 4; i++)
+            {
+                readAddr >>= 8;
+                readAddr |= receivePacketBuffer[i + 1] << 24;
+            }
+
+            readPtr = (u8 *)readAddr;
+            readLen = (int)receivePacketBuffer[5] + 1;
+
+            writePtr = responseBuffer + 1;
+
+            for (i = 0; i < readLen; i++)
+                *(writePtr++) = *(readPtr++);
+
+            // Expect read mem region data command
+            while (linkReceivePacket() == LINK_ERR)
+                ;
+
+            //printStr("r");
+
+            if (receivePacketBuffer[0] == FUZZY_COMMAND_READ_MEM_REGION_DATA)
+            {
+                if (linkSendPacket(responseBuffer, readLen + 1) == LINK_ERR)
+                    return COMMAND_ERR;
+            }
+            else if (fuzzyRespondUnexpectedCommand() == LINK_ERR)
+                return COMMAND_ERR;
+
+            // Exchange complete
+            //printStr("s.");
+
+            return COMMAND_OK;
+        }
     }
 
     return COMMAND_ERR;

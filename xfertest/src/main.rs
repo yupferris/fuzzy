@@ -80,20 +80,33 @@ fn main() {
         let col = rng.gen::<u32>() % 48;*/
         let addr = 0x00020000;// + (row * 64 + col) * 2;
 
-        print!("({}) issuing command ... ", packet_index);
+        print!("({}) issuing write command ... ", packet_index);
         stdout().flush().unwrap();
 
-        loop {
-            match fuzzy::write_mem_region(&mut port, addr, &data) {
-                Ok(_) => break,
-                Err(e) => {
-                    println!("error: {:?}", e);
-                    print!("Retrying ... ");
-                }
+        match fuzzy::write_mem_region(&mut port, addr, &data) {
+            Ok(_) => {
+                println!("ok");
+            }
+            Err(e) => {
+                println!("error: {:?}", e);
             }
         }
 
-        println!("ok");
+        print!("({}) issuing read command ... ", packet_index);
+        stdout().flush().unwrap();
+
+        match fuzzy::read_mem_region(&mut port, addr, data.len() as u32) {
+            Ok(read_data) => {
+                if read_data == data {
+                    println!("ok");
+                } else {
+                    println!("error: read data did not match");
+                }
+            }
+            Err(e) => {
+                println!("error: {:?}", e);
+            }
+        }
 
         //thread::sleep(Duration::from_millis(100));
 

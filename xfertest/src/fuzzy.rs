@@ -9,6 +9,7 @@ pub enum Error {
     Serial(vb_serial::Error),
     DataEmpty,
     DataTooLarge,
+    ZeroLength,
     ProtocolViolation,
     WrongCrapsum,
     InvalidResponse(Vec<u8>),
@@ -17,12 +18,15 @@ pub enum Error {
 enum Command {
     CheckStatus,
     WriteMemRegion { addr: u32, data: Vec<u8> },
+    ReadMemRegion { addr: u32, length: u32 },
+    ReadMemRegionData,
 }
 
 #[derive(Eq, PartialEq)]
 enum Response {
     UnexpectedCommand,
     OkWithCrapsum(Crapsum),
+    ReadMemRegionData(Vec<u8>),
 }
 
 impl Response {
@@ -52,6 +56,13 @@ impl Response {
 
                 Ok(Response::OkWithCrapsum(Crapsum::from_state(state)))
             }
+            0x02 => {
+                if data.len() < 2 {
+                    return Err(Error::InvalidResponse(data));
+                }
+
+                Ok(Response::ReadMemRegionData(data[1..].iter().cloned().collect()))
+            }
             _ => Err(Error::InvalidResponse(data))
         }
     }
@@ -79,13 +90,13 @@ pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -
         let (response, expected_crapsum) = issue_command(port, Command::WriteMemRegion { addr: addr, data: data })?;
 
         match response {
-            Response::UnexpectedCommand => {
-                return Err(Error::ProtocolViolation);
-            }
             Response::OkWithCrapsum(crapsum) => {
                 if crapsum != expected_crapsum {
                     return Err(Error::WrongCrapsum);
                 }
+            }
+            _ => {
+                return Err(Error::ProtocolViolation);
             }
         }
 
@@ -118,6 +129,69 @@ pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -
     Ok(())
 }
 
+pub fn read_mem_region<P: Read + Write>(port: &mut P, addr: u32, length: u32) -> Result<Vec<u8>, Error> {
+    if length == 0 {
+        return Err(Error::ZeroLength);
+    }
+
+    let mut ret = Vec::new();
+
+    let mut data_offset = 0;
+    loop {
+        let mut packet_len = (length as usize) - data_offset;
+        if packet_len > 256 - 1 {
+            packet_len = 256 - 1;
+        }
+
+        if packet_len == 0 {
+            break;
+        }
+
+        let addr = addr + (data_offset as u32);
+
+        let (response, expected_crapsum) = issue_command(port, Command::ReadMemRegion { addr: addr, length: packet_len as u32 })?;
+
+        match response {
+            Response::OkWithCrapsum(crapsum) => {
+                if crapsum != expected_crapsum {
+                    return Err(Error::WrongCrapsum);
+                }
+            }
+            _ => {
+                return Err(Error::ProtocolViolation);
+            }
+        }
+
+        let mut read_data_tries = 0;
+        loop {
+            if let Ok((response, _)) = issue_command(port, Command::ReadMemRegionData) {
+                match response {
+                    Response::ReadMemRegionData(data) => {
+                        if data.len() != packet_len {
+                            return Err(Error::ProtocolViolation);
+                        }
+
+                        ret.extend(data);
+                        break;
+                    }
+                    _ => {
+                        return Err(Error::ProtocolViolation);
+                    }
+                }
+            }
+
+            read_data_tries += 1;
+            if read_data_tries >= 5 {
+                return Err(Error::ProtocolViolation);
+            }
+        }
+
+        data_offset += packet_len;
+    }
+
+    Ok(ret)
+}
+
 fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Response, Crapsum), Error> {
     let packet = match command {
         Command::CheckStatus => vec![0x00],
@@ -138,6 +212,20 @@ fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Res
                 .cloned()
                 .collect::<Vec<_>>()
         }
+        Command::ReadMemRegion { addr, length } => {
+            if length == 0 {
+                return Err(Error::ZeroLength);
+            }
+
+            let addr_bytes: [u8; 4] = unsafe { transmute(addr.to_le()) };
+
+            vec![0x02].iter()
+                .chain(addr_bytes.iter())
+                .chain(vec![(length - 1) as u8].iter())
+                .cloned()
+                .collect::<Vec<_>>()
+        }
+        Command::ReadMemRegionData => vec![0x03],
     };
     let packet_crapsum = Crapsum::compute(&packet);
     let received_packet = exchange_packet(port, &packet).map_err(|e| Error::Serial(e))?;
