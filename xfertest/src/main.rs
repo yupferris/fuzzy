@@ -1,6 +1,7 @@
 extern crate serialport;
 extern crate rand;
 extern crate time;
+extern crate byteorder;
 
 mod crapsum;
 mod fuzzy;
@@ -9,18 +10,28 @@ mod vb_serial;
 
 //use rand::Rng;
 
-use time::precise_time_ns;
+//use time::precise_time_ns;
 
-use std::f64::consts::PI;
-use std::io::{stdout, Write};
+use byteorder::{LittleEndian, WriteBytesExt};
+
+//use std::f64::consts::PI;
+use std::fs::File;
+use std::io::{stdout, Read, Write};
 //use std::thread;
 //use std::time::Duration;
 
 fn main() {
-    let mut port = teensy_vb::connect("COM4").unwrap();
+    let mut port = teensy_vb::connect("COM4").expect("Couldn't connect to teensy");
+
+    let rom = {
+        let mut file = File::open("../flatrom/build/testrom.vxe").expect("Couldn't open ROM file");
+        let mut rom = Vec::new();
+        file.read_to_end(&mut rom).expect("Couldn't read ROM");
+        rom
+    };
 
     // Total overkill using this kind of timer but I already have it in scope and whatnot.. :D
-    let start_time = precise_time_ns();
+    //let start_time = precise_time_ns();
 
     // Go!
     let mut packet_index = 0;
@@ -51,10 +62,7 @@ fn main() {
             panic!("crapsum didn't match! {:?}", received_packet);
         }*/
 
-        /*let message = b"    * This came from the PC you guys!! *    ";
-        let data = message.iter().flat_map(|x| vec![*x, 0].into_iter()).collect::<Vec<_>>();*/
-
-        let time = (precise_time_ns().wrapping_sub(start_time) as f64) / 1e9;
+        /*let time = (precise_time_ns().wrapping_sub(start_time) as f64) / 1e9;
         let x_flow_time = time * 0.3;
         let y_flow_time = time * -0.24 + 1.0;
         let blocks =
@@ -75,10 +83,7 @@ fn main() {
             .collect::<Vec<_>>();
         let data = blocks.iter().flat_map(|x| vec![*x, 0].into_iter()).collect::<Vec<_>>();
 
-        /*let mut rng = rand::thread_rng();
-        let row = rng.gen::<u32>() % 28;
-        let col = rng.gen::<u32>() % 48;*/
-        let addr = 0x00020000;// + (row * 64 + col) * 2;
+        let addr = 0x00020000;
 
         print!("({}) issuing write command ... ", packet_index);
         stdout().flush().unwrap();
@@ -102,6 +107,77 @@ fn main() {
                 } else {
                     println!("error: read data did not match");
                 }
+            }
+            Err(e) => {
+                println!("error: {:?}", e);
+            }
+        }*/
+
+        let rom_addr = 0x05000000 + 0x2000;
+
+        print!("({}) issuing rom write command ... ", packet_index);
+        stdout().flush().unwrap();
+
+        match fuzzy::write_mem_region(&mut port, rom_addr, &rom) {
+            Ok(_) => {
+                println!("ok");
+            }
+            Err(e) => {
+                println!("error: {:?}", e);
+            }
+        }
+
+        let initial_regs_addr = 0x0001e000;
+        let initial_regs: Vec<u32> = vec![0xdeadbeef; 32];
+        let initial_regs_bytes = initial_regs.iter().flat_map(|x| {
+            let mut bytes = Vec::new();
+            bytes.write_u32::<LittleEndian>(*x).unwrap();
+            bytes
+        }).collect::<Vec<_>>();
+
+        print!("({}) issuing initial reg write command ... ", packet_index);
+        stdout().flush().unwrap();
+
+        match fuzzy::write_mem_region(&mut port, initial_regs_addr, &initial_regs_bytes) {
+            Ok(_) => {
+                println!("ok");
+            }
+            Err(e) => {
+                println!("error: {:?}", e);
+            }
+        }
+
+        let exec_entry = rom_addr;
+
+        print!("({}) issuing execute command ... ", packet_index);
+        stdout().flush().unwrap();
+
+        match fuzzy::execute(&mut port, exec_entry) {
+            Ok(_) => {
+                println!("ok");
+            }
+            Err(e) => {
+                println!("error: {:?}", e);
+            }
+        }
+
+        let result_regs_addr = initial_regs_addr + 32 * 4;
+
+        print!("({}) issuing read result regs command ... ", packet_index);
+        stdout().flush().unwrap();
+
+        match fuzzy::read_mem_region(&mut port, result_regs_addr, 32 * 4) {
+            Ok(result_regs_bytes) => {
+                println!("ok, result regs: [");
+                for i in 0..32 {
+                    let mut reg = 0;
+                    for j in 0..4 {
+                        reg >>= 8;
+                        reg |= (result_regs_bytes[(i * 4 + j) as usize] as u32) << 24;
+                    }
+                    println!("    r{}: 0x{:08x}", i, reg);
+                }
+                println!("]");
             }
             Err(e) => {
                 println!("error: {:?}", e);

@@ -20,6 +20,7 @@ enum Command {
     WriteMemRegion { addr: u32, data: Vec<u8> },
     ReadMemRegion { addr: u32, length: u32 },
     ReadMemRegionData,
+    Execute { entry: u32 },
 }
 
 #[derive(Eq, PartialEq)]
@@ -192,6 +193,46 @@ pub fn read_mem_region<P: Read + Write>(port: &mut P, addr: u32, length: u32) ->
     Ok(ret)
 }
 
+pub fn execute<P: Read + Write>(port: &mut P, entry: u32) -> Result<(), Error> {
+    let (response, expected_crapsum) = issue_command(port, Command::Execute { entry: entry })?;
+
+    match response {
+        Response::OkWithCrapsum(crapsum) => {
+            if crapsum != expected_crapsum {
+                return Err(Error::WrongCrapsum);
+            }
+        }
+        _ => {
+            return Err(Error::ProtocolViolation);
+        }
+    }
+
+    let mut status_tries = 0;
+    loop {
+        if let Ok((response, expected_crapsum)) = issue_command(port, Command::CheckStatus) {
+            match response {
+                Response::OkWithCrapsum(crapsum) => {
+                    if crapsum != expected_crapsum {
+                        return Err(Error::WrongCrapsum);
+                    }
+
+                    break;
+                }
+                _ => {
+                    return Err(Error::ProtocolViolation);
+                }
+            }
+        }
+
+        status_tries += 1;
+        if status_tries >= 5 {
+            return Err(Error::ProtocolViolation);
+        }
+    }
+
+    Ok(())
+}
+
 fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Response, Crapsum), Error> {
     let packet = match command {
         Command::CheckStatus => vec![0x00],
@@ -226,6 +267,14 @@ fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Res
                 .collect::<Vec<_>>()
         }
         Command::ReadMemRegionData => vec![0x03],
+        Command::Execute { entry } => {
+            let entry_bytes: [u8; 4] = unsafe { transmute(entry.to_le()) };
+
+            vec![0x04].iter()
+                .chain(entry_bytes.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+        }
     };
     let packet_crapsum = Crapsum::compute(&packet);
     let received_packet = exchange_packet(port, &packet).map_err(|e| Error::Serial(e))?;

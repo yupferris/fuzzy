@@ -223,16 +223,24 @@ int linkSendPacket(const u8 *packetBuffer, int packetLen)
     return LINK_OK;
 }
 
+// Fuzzy protocol
+
 static u8 responseBuffer[256];
 
 #define FUZZY_COMMAND_CHECK_STATUS 0x00
 #define FUZZY_COMMAND_WRITE_MEM_REGION 0x01
 #define FUZZY_COMMAND_READ_MEM_REGION 0x02
 #define FUZZY_COMMAND_READ_MEM_REGION_DATA 0x03
+#define FUZZY_COMMAND_EXECUTE 0x04
 
 #define FUZZY_RESPONSE_UNEXPECTED_COMMAND 0x00
 #define FUZZY_RESPONSE_OK_WITH_CRAPSUM 0x01
 #define FUZZY_RESPONSE_READ_MEM_REGION_DATA 0x02
+
+u32 *initialRegValues = (u32 *)CharSeg3;
+u32 *resultRegValues = (u32 *)(CharSeg3 + 32 * 4);
+
+extern void executeHarness(u32);
 
 int fuzzyRespondUnexpectedCommand()
 {
@@ -370,6 +378,54 @@ int commandDispatch()
 
             return COMMAND_OK;
         }
+
+    case FUZZY_COMMAND_EXECUTE:
+        // Send response packet
+        if (fuzzyRespondOkWithCrapsum() == LINK_ERR)
+            return COMMAND_ERR;
+
+        // Exchange complete
+        //printStr("s.");
+
+        // Execute command
+        {
+            u32 entry;
+            int i;
+
+            entry = 0;
+            for (i = 0; i < 4; i++)
+            {
+                entry >>= 8;
+                entry |= receivePacketBuffer[i + 1] << 24;
+            }
+
+            printStr("jumping to 0x");
+            printU32(entry);
+            printStr(" via harness\n");
+
+            executeHarness(entry);
+
+            printStr("successfully exited harness!\n");
+        }
+
+        // Expect check status command
+        while (linkReceivePacket() == LINK_ERR)
+            ;
+
+        //printStr("r");
+
+        if (receivePacketBuffer[0] == FUZZY_COMMAND_CHECK_STATUS)
+        {
+            if (fuzzyRespondOkWithCrapsum() == LINK_ERR)
+                return COMMAND_ERR;
+        }
+        else if (fuzzyRespondUnexpectedCommand() == LINK_ERR)
+            return COMMAND_ERR;
+
+        // Exchange complete
+        //printStr("s.");
+
+        return COMMAND_OK;
     }
 
     return COMMAND_ERR;
