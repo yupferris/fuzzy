@@ -6,7 +6,7 @@ extern crate byteorder;
 mod crapsum;
 mod fuzzy;
 mod teensy_vb;
-mod vb_serial;
+mod transport;
 
 //use rand::Rng;
 
@@ -115,77 +115,67 @@ fn main() {
 
         let rom_addr = 0x05000000 + 0x2000;
 
-        print!("({}) issuing rom write command ... ", packet_index);
-        stdout().flush().unwrap();
-
-        match fuzzy::write_mem_region(&mut port, rom_addr, &rom) {
-            Ok(_) => {
-                println!("ok");
-            }
-            Err(e) => {
-                println!("error: {:?}", e);
-            }
-        }
-
-        let initial_regs_addr = 0x0001e000;
-        let initial_regs: Vec<u32> = vec![0xdeadbeef; 32];
-        let initial_regs_bytes = initial_regs.iter().flat_map(|x| {
-            let mut bytes = Vec::new();
-            bytes.write_u32::<LittleEndian>(*x).unwrap();
-            bytes
-        }).collect::<Vec<_>>();
-
-        print!("({}) issuing initial reg write command ... ", packet_index);
-        stdout().flush().unwrap();
-
-        match fuzzy::write_mem_region(&mut port, initial_regs_addr, &initial_regs_bytes) {
-            Ok(_) => {
-                println!("ok");
-            }
-            Err(e) => {
-                println!("error: {:?}", e);
-            }
-        }
-
-        let exec_entry = rom_addr;
-
-        print!("({}) issuing execute command ... ", packet_index);
-        stdout().flush().unwrap();
-
-        match fuzzy::execute(&mut port, exec_entry) {
-            Ok(_) => {
-                println!("ok");
-            }
-            Err(e) => {
-                println!("error: {:?}", e);
-            }
-        }
-
-        let result_regs_addr = initial_regs_addr + 32 * 4;
-
-        print!("({}) issuing read result regs command ... ", packet_index);
-        stdout().flush().unwrap();
-
-        match fuzzy::read_mem_region(&mut port, result_regs_addr, 32 * 4) {
-            Ok(result_regs_bytes) => {
-                println!("ok, result regs: [");
-                for i in 0..32 {
-                    let mut reg = 0;
-                    for j in 0..4 {
-                        reg >>= 8;
-                        reg |= (result_regs_bytes[(i * 4 + j) as usize] as u32) << 24;
-                    }
-                    println!("    r{}: 0x{:08x}", i, reg);
-                }
-                println!("]");
-            }
-            Err(e) => {
-                println!("error: {:?}", e);
-            }
+        if let Err(e) = test_rom(&mut port, &rom, rom_addr, packet_index) {
+            println!("error: {:?}", e);
         }
 
         //thread::sleep(Duration::from_millis(100));
 
         packet_index += 1;
     }
+}
+
+fn test_rom<P: Read + Write>(port: &mut P, rom: &[u8], rom_addr: u32, packet_index: u32) -> Result<(), fuzzy::Error> {
+    print!("({}) issuing rom write command ... ", packet_index);
+    stdout().flush().unwrap();
+
+    fuzzy::write_mem_region(port, rom_addr, &rom)?;
+
+    println!("ok");
+
+    let initial_regs_addr = 0x0001e000;
+    let initial_regs: Vec<u32> = vec![0xdeadbeef; 30]; // Initial regs cover r0-r29 inclusive
+    let initial_regs_bytes = initial_regs.iter().flat_map(|x| {
+        let mut bytes = Vec::new();
+        bytes.write_u32::<LittleEndian>(*x).unwrap();
+        bytes
+    }).collect::<Vec<_>>();
+
+    print!("({}) issuing initial reg write command ... ", packet_index);
+    stdout().flush().unwrap();
+
+    fuzzy::write_mem_region(port, initial_regs_addr, &initial_regs_bytes)?;
+
+    println!("ok");
+
+    let exec_entry = rom_addr;
+
+    print!("({}) issuing execute command ... ", packet_index);
+    stdout().flush().unwrap();
+
+    fuzzy::execute(port, exec_entry)?;
+
+    println!("ok");
+
+    let result_regs_addr = initial_regs_addr + 32 * 4;
+
+    print!("({}) issuing read result regs command ... ", packet_index);
+    stdout().flush().unwrap();
+
+    let result_regs_bytes = fuzzy::read_mem_region(port, result_regs_addr, 32 * 4)?;
+
+    println!("ok, result regs: [");
+    for i in 0..32 {
+        let mut reg = 0;
+        for j in 0..4 {
+            reg >>= 8;
+            reg |= (result_regs_bytes[(i * 4 + j) as usize] as u32) << 24;
+        }
+        print!("    ");
+        if i < 31 { print!("r{}", i) } else { print!("psw") };
+        println!(": 0x{:08x}", reg);
+    }
+    println!("]");
+
+    Ok(())
 }

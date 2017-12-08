@@ -237,9 +237,6 @@ static u8 responseBuffer[256];
 #define FUZZY_RESPONSE_OK_WITH_CRAPSUM 0x01
 #define FUZZY_RESPONSE_READ_MEM_REGION_DATA 0x02
 
-u32 *initialRegValues = (u32 *)CharSeg3;
-u32 *resultRegValues = (u32 *)(CharSeg3 + 32 * 4);
-
 extern void executeHarness(u32);
 
 int fuzzyRespondUnexpectedCommand()
@@ -399,13 +396,13 @@ int commandDispatch()
                 entry |= receivePacketBuffer[i + 1] << 24;
             }
 
-            printStr("jumping to 0x");
+            /*printStr("jumping to 0x");
             printU32(entry);
-            printStr(" via harness\n");
+            printStr(" via harness\n");*/
 
             executeHarness(entry);
 
-            printStr("successfully exited harness!\n");
+            //printStr("successfully exited harness!\n");
         }
 
         // Expect check status command
@@ -494,7 +491,7 @@ int main()
     linkInit();
 
     // Let's goooo!
-    printStr("link test yo\n");
+    printStr("ready\n");
 
     while (1)
     {
@@ -509,5 +506,7 @@ int main()
 
         if (commandDispatch() == COMMAND_ERR)
             printStr("f");
+
+        printStr("sc.");
     }
 }

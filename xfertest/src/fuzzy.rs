@@ -1,12 +1,12 @@
 use crapsum::*;
-use vb_serial::{self, exchange_packet};
+use transport::{self, exchange_packet};
 
 use std::io::{Read, Write};
 use std::mem::transmute;
 
 #[derive(Debug)]
 pub enum Error {
-    Serial(vb_serial::Error),
+    Transport(transport::Error),
     DataEmpty,
     DataTooLarge,
     ZeroLength,
@@ -277,6 +277,6 @@ fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Res
         }
     };
     let packet_crapsum = Crapsum::compute(&packet);
-    let received_packet = exchange_packet(port, &packet).map_err(|e| Error::Serial(e))?;
+    let received_packet = exchange_packet(port, &packet).map_err(|e| Error::Transport(e))?;
     Response::parse(received_packet).map(|response| (response, packet_crapsum))
 }
