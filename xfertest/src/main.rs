@@ -134,7 +134,7 @@ fn test_rom<P: Read + Write>(port: &mut P, rom: &[u8], rom_addr: u32, packet_ind
     println!("ok");
 
     let initial_regs_addr = 0x0001e000;
-    let initial_regs: Vec<u32> = vec![0xdeadbeef; 30]; // Initial regs cover r0-r29 inclusive
+    let initial_regs = [0xdeadbeef; 30]; // Initial regs cover r0-r29 inclusive
     let initial_regs_bytes = initial_regs.iter().flat_map(|x| {
         let mut bytes = Vec::new();
         bytes.write_u32::<LittleEndian>(*x).unwrap();
