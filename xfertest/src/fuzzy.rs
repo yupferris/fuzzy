@@ -86,7 +86,7 @@ pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -
         }
 
         let addr = addr + (data_offset as u32);
-        let data = data[data_offset..data_offset + packet_len].iter().cloned().collect::<Vec<_>>();
+        let data = data[data_offset..data_offset + packet_len].to_vec();
         
         let (response, expected_crapsum) = issue_command(port, Command::WriteMemRegion { addr: addr, data: data })?;
 
