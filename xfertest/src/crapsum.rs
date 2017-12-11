@@ -1,4 +1,4 @@
-#[derive(Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Crapsum {
     pub state: u32,
 }
