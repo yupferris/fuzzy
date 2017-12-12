@@ -5,6 +5,9 @@ PROJECT=testrom
 ASM_SRC=$(PROJECT).s
 ASM_OBJ=$(BUILD_DIR)/$(PROJECT)_s.o
 
+C_SRC=$(PROJECT).c
+C_OBJ=$(BUILD_DIR)/$(PROJECT)_c.o
+
 PROJECT_ELF=$(BUILD_DIR)/$(PROJECT).elf
 PROJECT_TARGET=$(BUILD_DIR)/$(PROJECT).vxe
 
@@ -29,8 +32,11 @@ $(BUILD_DIR):
 $(ASM_OBJ): $(ASM_SRC)
 	$(AS) -o $(ASM_OBJ) $(ASM_SRC)
 
-$(PROJECT_ELF): $(ASM_OBJ) $(LINKER_SCRIPT)
-	$(GCC) -o $(PROJECT_ELF) -nostartfiles $(ASM_OBJ) -T$(LINKER_SCRIPT)
+$(C_OBJ): $(C_SRC) $(C_HEADER)
+	$(GCC) -nodefaultlibs -mv810 -O3 -c $(C_SRC) -o $(C_OBJ)
+
+$(PROJECT_ELF): $(ASM_OBJ) $(C_OBJ) $(LINKER_SCRIPT)
+	$(GCC) -o $(PROJECT_ELF) -nostartfiles $(ASM_OBJ) $(C_OBJ) -T$(LINKER_SCRIPT)
 
 $(PROJECT_TARGET): $(PROJECT_ELF)
 	$(OBJCOPY) -O binary $(PROJECT_ELF) $(PROJECT_TARGET)

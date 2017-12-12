@@ -120,7 +120,7 @@ fn main() {
             }
         }*/
 
-        let rom_addr = 0x05000000 + 0x2000;
+        let rom_addr = 0x05000000 + 0x0400;
 
         if let Err(e) = test_rom(&mut hw_port, &mut emu_port, &rom, rom_addr, test_index) {
             println!("error: {:?}", e);
