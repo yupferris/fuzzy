@@ -11,7 +11,7 @@ pub enum Error {
     DataTooLarge,
     ZeroLength,
     ProtocolViolation,
-    WrongCrapsum,
+    WrongCrapsum(Crapsum),
     InvalidResponse(Vec<u8>),
 }
 
@@ -93,7 +93,7 @@ pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -
         match response {
             Response::OkWithCrapsum(crapsum) => {
                 if crapsum != expected_crapsum {
-                    return Err(Error::WrongCrapsum);
+                    return Err(Error::WrongCrapsum(crapsum));
                 }
             }
             _ => {
@@ -107,7 +107,7 @@ pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -
                 match response {
                     Response::OkWithCrapsum(crapsum) => {
                         if crapsum != expected_crapsum {
-                            return Err(Error::WrongCrapsum);
+                            return Err(Error::WrongCrapsum(crapsum));
                         }
 
                         break;
@@ -155,7 +155,7 @@ pub fn read_mem_region<P: Read + Write>(port: &mut P, addr: u32, length: u32) ->
         match response {
             Response::OkWithCrapsum(crapsum) => {
                 if crapsum != expected_crapsum {
-                    return Err(Error::WrongCrapsum);
+                    return Err(Error::WrongCrapsum(crapsum));
                 }
             }
             _ => {
@@ -199,7 +199,7 @@ pub fn execute<P: Read + Write>(port: &mut P, entry: u32) -> Result<(), Error> {
     match response {
         Response::OkWithCrapsum(crapsum) => {
             if crapsum != expected_crapsum {
-                return Err(Error::WrongCrapsum);
+                return Err(Error::WrongCrapsum(crapsum));
             }
         }
         _ => {
@@ -213,7 +213,7 @@ pub fn execute<P: Read + Write>(port: &mut P, entry: u32) -> Result<(), Error> {
             match response {
                 Response::OkWithCrapsum(crapsum) => {
                     if crapsum != expected_crapsum {
-                        return Err(Error::WrongCrapsum);
+                        return Err(Error::WrongCrapsum(crapsum));
                     }
 
                     break;

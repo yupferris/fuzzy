@@ -5,6 +5,9 @@ authors = ["ferris <yupferris@gmail.com>"]
 
 [dependencies]
 serialport = "1.0.1"
+rustual-boy-core = { path = "../../vb-rs/rustual-boy-core" }
+rustual-boy-middleware = { path = "../../vb-rs/rustual-boy-middleware" }
 rand = "0.3"
 time = "0.1"
 byteorder = "1"
+minifb = "0.9.0"
