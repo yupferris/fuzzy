@@ -86,7 +86,7 @@ pub fn write_mem_region<P: Read + Write>(port: &mut P, addr: u32, data: &[u8]) -
         }
 
         let addr = addr + (data_offset as u32);
-        let data = data[data_offset..data_offset + packet_len].iter().cloned().collect::<Vec<_>>();
+        let data = data[data_offset..data_offset + packet_len].to_vec();
         
         let (response, expected_crapsum) = issue_command(port, Command::WriteMemRegion { addr: addr, data: data })?;
 
@@ -247,7 +247,7 @@ fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Res
 
             let addr_bytes: [u8; 4] = unsafe { transmute(addr.to_le()) };
 
-            vec![0x01].iter()
+            [0x01].iter()
                 .chain(addr_bytes.iter())
                 .chain(data.iter())
                 .cloned()
@@ -260,9 +260,9 @@ fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Res
 
             let addr_bytes: [u8; 4] = unsafe { transmute(addr.to_le()) };
 
-            vec![0x02].iter()
+            [0x02].iter()
                 .chain(addr_bytes.iter())
-                .chain(vec![(length - 1) as u8].iter())
+                .chain([(length - 1) as u8].iter())
                 .cloned()
                 .collect::<Vec<_>>()
         }
@@ -270,7 +270,7 @@ fn issue_command<P: Read + Write>(port: &mut P, command: Command) -> Result<(Res
         Command::Execute { entry } => {
             let entry_bytes: [u8; 4] = unsafe { transmute(entry.to_le()) };
 
-            vec![0x04].iter()
+            [0x04].iter()
                 .chain(entry_bytes.iter())
                 .cloned()
                 .collect::<Vec<_>>()

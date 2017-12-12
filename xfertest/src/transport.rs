@@ -31,7 +31,7 @@ pub fn exchange_packet<P: Read + Write>(port: &mut P, packet: &[u8]) -> Result<V
 }
 
 fn read_byte<R: Read>(r: &mut R) -> Result<u8, Error> {
-    let mut buf = vec![0];
+    let mut buf = [0];
     r.read(&mut buf)
         .map(|_| buf[0])
         .map_err(|e| Error::Io(e))
