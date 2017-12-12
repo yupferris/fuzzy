@@ -1,6 +1,6 @@
 BUILD_DIR=build
 
-PROJECT=testrom
+PROJECT=loader
 
 ASM_SRC=$(PROJECT).s
 ASM_OBJ=$(BUILD_DIR)/$(PROJECT)_s.o

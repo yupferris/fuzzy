@@ -21,7 +21,7 @@ pub struct EmulatedVbSerialPort {
 
 impl EmulatedVbSerialPort {
     pub fn new() -> EmulatedVbSerialPort {
-        let rom = Rom::load("../serialtest/build/testrom.vb").expect("Couldn't load ROM for emulated VB");
+        let rom = Rom::load("../loader/build/loader.vb").expect("Couldn't load loader ROM for emulated VB");
         let sram = Sram::new();
         let virtual_boy = VirtualBoy::new(rom, sram);
 
