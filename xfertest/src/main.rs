@@ -6,9 +6,9 @@ extern crate time;
 extern crate byteorder;
 extern crate minifb;
 
+mod command;
 mod crapsum;
 mod emu;
-mod fuzzy;
 mod teensy_vb;
 mod transport;
 
@@ -95,7 +95,7 @@ fn main() {
         print!("({}) issuing write command ... ", test_index);
         stdout().flush().unwrap();
 
-        match fuzzy::write_mem_region(&mut port, addr, &data) {
+        match command::write_mem_region(&mut port, addr, &data) {
             Ok(_) => {
                 println!("ok");
             }
@@ -107,7 +107,7 @@ fn main() {
         print!("({}) issuing read command ... ", test_index);
         stdout().flush().unwrap();
 
-        match fuzzy::read_mem_region(&mut port, addr, data.len() as u32) {
+        match command::read_mem_region(&mut port, addr, data.len() as u32) {
             Ok(read_data) => {
                 if read_data == data {
                     println!("ok");
@@ -132,7 +132,7 @@ fn main() {
     }
 }
 
-fn test_rom<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, rom: &[u8], rom_addr: u32, test_index: u32) -> Result<(), fuzzy::Error> {
+fn test_rom<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, rom: &[u8], rom_addr: u32, test_index: u32) -> Result<(), command::Error> {
     // TODO: Dispatch on separate threads and join to compare (doesn't make much sense yet due to all this extra printing)
     println!("({}) Hardware dispatch", test_index);
     let hw_result_regs = test_rom_on_port(hw_port, rom, rom_addr, test_index)?;
@@ -147,11 +147,11 @@ fn test_rom<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: 
     Ok(())
 }
 
-fn test_rom_on_port<P: Read + Write>(port: &mut P, rom: &[u8], rom_addr: u32, test_index: u32) -> Result<Vec<u32>, fuzzy::Error> {
+fn test_rom_on_port<P: Read + Write>(port: &mut P, rom: &[u8], rom_addr: u32, test_index: u32) -> Result<Vec<u32>, command::Error> {
     print!("({}) issuing rom write command ... ", test_index);
     stdout().flush().unwrap();
 
-    fuzzy::write_mem_region(port, rom_addr, &rom)?;
+    command::write_mem_region(port, rom_addr, &rom)?;
 
     println!("ok");
 
@@ -166,7 +166,7 @@ fn test_rom_on_port<P: Read + Write>(port: &mut P, rom: &[u8], rom_addr: u32, te
     print!("({}) issuing initial reg write command ... ", test_index);
     stdout().flush().unwrap();
 
-    fuzzy::write_mem_region(port, initial_regs_addr, &initial_regs_bytes)?;
+    command::write_mem_region(port, initial_regs_addr, &initial_regs_bytes)?;
 
     println!("ok");
 
@@ -175,7 +175,7 @@ fn test_rom_on_port<P: Read + Write>(port: &mut P, rom: &[u8], rom_addr: u32, te
     print!("({}) issuing execute command ... ", test_index);
     stdout().flush().unwrap();
 
-    fuzzy::execute(port, exec_entry)?;
+    command::execute(port, exec_entry)?;
 
     println!("ok");
 
@@ -184,7 +184,7 @@ fn test_rom_on_port<P: Read + Write>(port: &mut P, rom: &[u8], rom_addr: u32, te
     print!("({}) issuing read result regs command ... ", test_index);
     stdout().flush().unwrap();
 
-    let result_regs_bytes = fuzzy::read_mem_region(port, result_regs_addr, 32 * 4)?;
+    let result_regs_bytes = command::read_mem_region(port, result_regs_addr, 32 * 4)?;
     let mut result_regs = Vec::new();
 
     println!("ok, result regs: [");
