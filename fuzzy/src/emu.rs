@@ -173,7 +173,7 @@ impl Write for EmulatedVbSerialPort {
         }
 
         // Step VB a bit to make sure it's ready for upcoming commands
-        self.step_ns(1_000_000);
+        self.step_ns(10_000_000);
 
         Ok(buf.len())
     }
