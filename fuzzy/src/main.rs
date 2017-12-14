@@ -110,6 +110,8 @@ fn muls<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut
     let mut rng: StdRng = SeedableRng::from_seed(seed);
     let mut mul = Mul::new(rng);
 
+    // We use a particularly low number here, as otherwise values from r0 will propagate to all other regs eventually.
+    //  Need to make sure we test mul more thoroughly among other instr's as well in other tests.
     for _ in 0..100 {
         mul.next(&mut rom);
     }
