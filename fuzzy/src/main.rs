@@ -18,7 +18,6 @@ use byteorder::{LittleEndian, WriteBytesExt};
 
 use emu::*;
 
-use std::fmt::Debug;
 use std::io::{stdout, Read, Write};
 
 fn main() {
@@ -65,30 +64,49 @@ fn main() {
         test!(revs),
         test!(xbs),
         test!(xhs),
+        test!(divs),
+        test!(divus),
         test!(multi_all),
+        test!(multi_all_stsr_psws),
+        test!(multi_all_branches),
     ];
 
-    let num_tests = tests.len();
-    let mut passed_tests = 0;
-    let mut failed_tests = 0;
+    let mut suite_iteration = 0;
 
-    for (index, (test_fn, test_name)) in tests.into_iter().enumerate() {
-        print!("({}) running test `{}` ... ", index, test_name);
-        stdout().flush().unwrap();
-        match test_fn(&mut hw_port, &mut emu_port, index) {
-            Ok(()) => {
-                println!("ok");
-                passed_tests += 1;
-            }
-            Err(e) => {
-                println!("ERROR: {}", e);
-                failed_tests += 1;
+    loop {
+        println!("Suite iteration: {}", suite_iteration);
+
+        let num_tests = tests.len();
+        let mut passed_tests = 0;
+        let mut failed_tests = 0;
+
+        for (index, &(ref test_fn, test_name)) in tests.iter().enumerate() {
+            print!("({}) running test `{}` ... ", index, test_name);
+            stdout().flush().unwrap();
+            match test_fn(&mut hw_port, &mut emu_port, suite_iteration + index) {
+                Ok(()) => {
+                    println!("ok");
+                    passed_tests += 1;
+                }
+                Err(e) => {
+                    println!("ERROR: {}", e);
+                    failed_tests += 1;
+                }
             }
         }
-    }
 
-    println!("");
-    println!("Ran {} tests, {} passed, {} failed", num_tests, passed_tests, failed_tests);
+        println!("");
+        println!("Ran {} tests, {} passed, {} failed", num_tests, passed_tests, failed_tests);
+
+        if failed_tests > 0 {
+            println!("FAILED ON SUITE ITERATION {}", suite_iteration);
+            break;
+        }
+
+        println!("");
+
+        suite_iteration += 1;
+    }
 }
 
 trait Generator {
@@ -116,6 +134,216 @@ impl Generator for MultiGenerator {
     }
 }
 
+struct AlternatingGenerator {
+    generators: [Box<Generator>; 2],
+    index: usize,
+}
+
+impl AlternatingGenerator {
+    fn new(a: Box<Generator>, b: Box<Generator>) -> AlternatingGenerator {
+        AlternatingGenerator {
+            generators: [a, b],
+            index: 0,
+        }
+    }
+}
+
+impl Generator for AlternatingGenerator {
+    fn next(&mut self, buf: &mut Vec<u8>) {
+        self.generators[self.index].next(buf);
+        self.index = 1 - self.index;
+    }
+}
+
+struct BranchingGenerator {
+    block_instruction_generator: Box<Generator>,
+    rng: StdRng,
+}
+
+impl BranchingGenerator {
+    fn new(block_instruction_generator: Box<Generator>, rng: StdRng) -> BranchingGenerator {
+        BranchingGenerator {
+            block_instruction_generator: block_instruction_generator,
+            rng: rng,
+        }
+    }
+}
+
+impl Generator for BranchingGenerator {
+    fn next(&mut self, buf: &mut Vec<u8>) {
+        /*
+
+            block0 {
+                ...
+                bcond block1
+                jr block2
+            }
+
+            block1/2 {
+                ...
+                jr exit
+            }
+
+enter:
+            jr block0
+slot0:
+            [one of block0/1/2]
+slot1:
+            [one of block0/1/2]
+slot2:
+            [one of block0/1/2]
+exit:
+
+        */
+
+        let rom_addr = 0x05000000 + 0x0400;
+
+        // Generate blocks
+        let mut blocks = Vec::new();
+        for i in 0..3 {
+            let mut instructions = Vec::new();
+            let num_instrs = self.rng.gen::<u32>() % 3 + 1;
+            for _ in 0..num_instrs {
+                self.block_instruction_generator.next(&mut instructions);
+            }
+            let branches = if i == 0 {
+                vec![Branch::random_bcond(&mut self.rng), Branch::Jr { addr: None, target: None }]
+            } else {
+                vec![Branch::Jr { addr: None, target: None }]
+            };
+            blocks.push(Block::new(instructions, branches));
+        }
+
+        // Assign blocks to available slots
+        let mut slot_block_indices = [0, 1, 2];
+        self.rng.shuffle(&mut slot_block_indices);
+        let mut block_slot_indices = [0; 3];
+        for i in 0..3 {
+            block_slot_indices[slot_block_indices[i]] = i;
+        }
+
+        // Flatten blocks in their respective slots
+        let enter = rom_addr + (buf.len() as u32);
+        let mut enter_branch = Branch::Jr { addr: Some(enter), target: None };
+        let slot0 = enter + (enter_branch.len() as u32);
+        let slot1 = slot0 + (blocks[slot_block_indices[0]].len() as u32);
+        let slot2 = slot1 + (blocks[slot_block_indices[1]].len() as u32);
+        let exit = slot2 + (blocks[slot_block_indices[2]].len() as u32);
+        blocks[slot_block_indices[0]].flatten(slot0);
+        blocks[slot_block_indices[1]].flatten(slot1);
+        blocks[slot_block_indices[2]].flatten(slot2);
+
+        // Resolve branch addr's
+        enter_branch.set_target(blocks[0].addr.unwrap());
+        for i in 0..3 {
+            if i == 0 {
+                let branch_target = blocks[1].addr.unwrap();
+                blocks[i].branches[0].set_target(branch_target);
+                let jump_target = blocks[2].addr.unwrap();
+                blocks[i].branches[1].set_target(jump_target);
+            } else {
+                blocks[i].branches[0].set_target(exit);
+            }
+        }
+
+        // Serialize
+        enter_branch.serialize(buf);
+        //  Make sure blocks are serialized in slot order
+        for i in 0..3 {
+            blocks[slot_block_indices[i]].serialize(buf);
+        }
+    }
+}
+
+// TODO: Also support jmp, which requires setting a reg value first
+#[derive(Debug)]
+enum Branch {
+    BCond { addr: Option<u32>, target: Option<u32>, cond: u32 },
+    Jr { addr: Option<u32>, target: Option<u32> },
+}
+
+impl Branch {
+    fn random_bcond(rng: &mut StdRng) -> Branch {
+        Branch::BCond { addr: None, target: None, cond: rng.gen::<u32>() & 0x0f }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            &Branch::BCond { .. } => 2,
+            &Branch::Jr { .. } => 4,
+        }
+    }
+
+    fn set_addr(&mut self, value: u32) {
+        let value = Some(value);
+        match self {
+            &mut Branch::BCond { ref mut addr, .. } => *addr = value,
+            &mut Branch::Jr { ref mut addr, .. } => *addr = value,
+        }
+    }
+
+    fn set_target(&mut self, value: u32) {
+        let value = Some(value);
+        match self {
+            &mut Branch::BCond { ref mut target, .. } => *target = value,
+            &mut Branch::Jr { ref mut target, .. } => *target = value,
+        }
+    }
+
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        match self {
+            &Branch::BCond { addr, target, cond } => {
+                let op = (0b100 << 4) | cond;
+                let disp9 = target.unwrap().wrapping_sub(addr.unwrap()) & 0b11111111_1;
+                buf.write_u16::<LittleEndian>(((op << 9) | disp9) as u16).unwrap();
+            }
+            &Branch::Jr { addr, target } => {
+                let op = 0b101010;
+                let disp26 = target.unwrap().wrapping_sub(addr.unwrap()) & 0b11111111_11111111_11111111_11;
+                buf.write_u16::<LittleEndian>(((op << 10) | (disp26 >> 16)) as u16).unwrap();
+                buf.write_u16::<LittleEndian>(disp26 as u16).unwrap();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Block {
+    addr: Option<u32>,
+    instructions: Vec<u8>,
+    branches: Vec<Branch>,
+}
+
+impl Block {
+    fn new(instructions: Vec<u8>, branches: Vec<Branch>) -> Block {
+        Block {
+            addr: None,
+            instructions: instructions,
+            branches: branches,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.instructions.len() + self.branches.iter().map(|x| x.len()).sum::<usize>()
+    }
+
+    fn flatten(&mut self, mut addr: u32) {
+        self.addr = Some(addr);
+        addr += self.instructions.len() as u32;
+        for branch in self.branches.iter_mut() {
+            branch.set_addr(addr);
+            addr += branch.len() as u32;
+        }
+    }
+
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        buf.extend(&self.instructions);
+        for branch in self.branches.iter() {
+            branch.serialize(buf);
+        }
+    }
+}
+
 struct Ret;
 
 impl Generator for Ret {
@@ -126,11 +354,11 @@ impl Generator for Ret {
     }
 }
 
-fn single_ret<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
+fn single_ret<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
     let mut rom = Vec::new();
     Ret.next(&mut rom);
     
-    let initial_regs = random_regs(&mut build_rng(test_index));
+    let initial_regs = random_regs(&mut build_rng(initial_seed));
 
     test_rom(hw_port, emu_port, &rom, &initial_regs)
 }
@@ -156,8 +384,8 @@ impl Generator for Mul {
     }
 }
 
-fn muls<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn muls<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -197,8 +425,8 @@ impl Generator for StsrPsw {
     }
 }
 
-fn stsr_psws<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn stsr_psws<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -238,8 +466,8 @@ impl Generator for Movea {
     }
 }
 
-fn moveas<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn moveas<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -279,8 +507,8 @@ impl Generator for Movhi {
     }
 }
 
-fn movhis<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn movhis<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -318,8 +546,8 @@ impl Generator for MovReg {
     }
 }
 
-fn mov_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn mov_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -357,8 +585,8 @@ impl Generator for MovImm {
     }
 }
 
-fn mov_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn mov_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -396,8 +624,8 @@ impl Generator for Mulu {
     }
 }
 
-fn mulus<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn mulus<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -437,8 +665,8 @@ impl Generator for Not {
     }
 }
 
-fn nots<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn nots<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -476,8 +704,8 @@ impl Generator for Or {
     }
 }
 
-fn ors<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn ors<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -517,8 +745,8 @@ impl Generator for Ori {
     }
 }
 
-fn oris<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn oris<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -556,8 +784,8 @@ impl Generator for SarReg {
     }
 }
 
-fn sar_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn sar_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -595,8 +823,8 @@ impl Generator for SarImm {
     }
 }
 
-fn sar_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn sar_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -634,8 +862,8 @@ impl Generator for Setf {
     }
 }
 
-fn setfs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn setfs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -673,8 +901,8 @@ impl Generator for ShlReg {
     }
 }
 
-fn shl_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn shl_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -712,8 +940,8 @@ impl Generator for ShlImm {
     }
 }
 
-fn shl_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn shl_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -751,8 +979,8 @@ impl Generator for ShrReg {
     }
 }
 
-fn shr_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn shr_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -790,8 +1018,8 @@ impl Generator for ShrImm {
     }
 }
 
-fn shr_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn shr_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -829,8 +1057,8 @@ impl Generator for Sub {
     }
 }
 
-fn subs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn subs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -868,8 +1096,8 @@ impl Generator for Xor {
     }
 }
 
-fn xors<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn xors<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -909,8 +1137,8 @@ impl Generator for Xori {
     }
 }
 
-fn xoris<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn xoris<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -948,8 +1176,8 @@ impl Generator for AddReg {
     }
 }
 
-fn add_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn add_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -987,8 +1215,8 @@ impl Generator for AddImm {
     }
 }
 
-fn add_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn add_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1028,8 +1256,8 @@ impl Generator for AddI {
     }
 }
 
-fn addis<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn addis<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1067,8 +1295,8 @@ impl Generator for And {
     }
 }
 
-fn ands<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn ands<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1108,8 +1336,8 @@ impl Generator for AndI {
     }
 }
 
-fn andis<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn andis<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1147,8 +1375,8 @@ impl Generator for CmpReg {
     }
 }
 
-fn cmp_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn cmp_regs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1186,8 +1414,8 @@ impl Generator for CmpImm {
     }
 }
 
-fn cmp_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn cmp_imms<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1227,8 +1455,8 @@ impl Generator for Mpyhw {
     }
 }
 
-fn mpyhws<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn mpyhws<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1268,8 +1496,8 @@ impl Generator for Rev {
     }
 }
 
-fn revs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn revs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1309,8 +1537,8 @@ impl Generator for Xb {
     }
 }
 
-fn xbs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn xbs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1350,8 +1578,8 @@ impl Generator for Xh {
     }
 }
 
-fn xhs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn xhs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1368,8 +1596,86 @@ fn xhs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut 
     test_rom(hw_port, emu_port, &rom, &initial_regs)
 }
 
-fn multi1<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+struct Div {
+    rng: StdRng,
+}
+
+impl Div {
+    fn new(rng: StdRng) -> Div {
+        Div {
+            rng: rng,
+        }
+    }
+}
+
+impl Generator for Div {
+    fn next(&mut self, buf: &mut Vec<u8>) {
+        let op = 0b001001;
+        let reg1 = self.rng.gen::<u32>() % 32;
+        let reg2 = self.rng.gen::<u32>() % 31; // Don't include r31
+        buf.write_u16::<LittleEndian>((op << 10) | ((reg2 as u16) << 5) | (reg1 as u16)).unwrap();
+    }
+}
+
+fn divs<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
+
+    let mut rom = Vec::new();
+
+    let mut div = Div::new(build_rng(rng.gen::<usize>()));
+
+    for _ in 0..1000 {
+        div.next(&mut rom);
+    }
+
+    Ret.next(&mut rom);
+    
+    let initial_regs = random_regs(&mut build_rng(rng.gen::<usize>()));
+
+    test_rom(hw_port, emu_port, &rom, &initial_regs)
+}
+
+struct Divu {
+    rng: StdRng,
+}
+
+impl Divu {
+    fn new(rng: StdRng) -> Divu {
+        Divu {
+            rng: rng,
+        }
+    }
+}
+
+impl Generator for Divu {
+    fn next(&mut self, buf: &mut Vec<u8>) {
+        let op = 0b001011;
+        let reg1 = self.rng.gen::<u32>() % 32;
+        let reg2 = self.rng.gen::<u32>() % 31; // Don't include r31
+        buf.write_u16::<LittleEndian>((op << 10) | ((reg2 as u16) << 5) | (reg1 as u16)).unwrap();
+    }
+}
+
+fn divus<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
+
+    let mut rom = Vec::new();
+
+    let mut divu = Divu::new(build_rng(rng.gen::<usize>()));
+
+    for _ in 0..1000 {
+        divu.next(&mut rom);
+    }
+
+    Ret.next(&mut rom);
+    
+    let initial_regs = random_regs(&mut build_rng(rng.gen::<usize>()));
+
+    test_rom(hw_port, emu_port, &rom, &initial_regs)
+}
+
+fn multi1<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1390,8 +1696,8 @@ fn multi1<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &m
     test_rom(hw_port, emu_port, &rom, &initial_regs)
 }
 
-fn multi2<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn multi2<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1415,8 +1721,8 @@ fn multi2<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &m
     test_rom(hw_port, emu_port, &rom, &initial_regs)
 }
 
-fn multi3<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn multi3<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
@@ -1442,11 +1748,71 @@ fn multi3<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &m
     test_rom(hw_port, emu_port, &rom, &initial_regs)
 }
 
-fn multi_all<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, test_index: usize) -> Result<(), String> {
-    let mut rng = build_rng(test_index);
+fn multi_all<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
 
     let mut rom = Vec::new();
 
+    let mut gen = build_all_generator(&mut rng);
+
+    for _ in 0..4000 {
+        gen.next(&mut rom);
+    }
+
+    Ret.next(&mut rom);
+
+    let initial_regs = random_regs(&mut build_rng(rng.gen::<usize>()));
+
+    test_rom(hw_port, emu_port, &rom, &initial_regs)?;
+
+    Ok(())
+}
+
+fn multi_all_stsr_psws<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
+
+    let mut rom = Vec::new();
+
+    let all = build_all_generator(&mut rng);
+    let stsr_psw = StsrPsw::new(build_rng(rng.gen::<usize>()));
+    let mut gen = AlternatingGenerator::new(Box::new(all), Box::new(stsr_psw));
+
+    for _ in 0..4000 {
+        gen.next(&mut rom);
+    }
+
+    Ret.next(&mut rom);
+
+    let initial_regs = random_regs(&mut build_rng(rng.gen::<usize>()));
+
+    test_rom(hw_port, emu_port, &rom, &initial_regs)?;
+
+    Ok(())
+}
+
+fn multi_all_branches<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, initial_seed: usize) -> Result<(), String> {
+    let mut rng = build_rng(initial_seed);
+
+    let mut rom = Vec::new();
+
+    let all = build_all_generator(&mut rng);
+    let mut gen = BranchingGenerator::new(Box::new(all), build_rng(rng.gen::<usize>()));
+
+    // Less iterations, as the branching generator will generate full blocks, not invididual instrs
+    for _ in 0..1000 {
+        gen.next(&mut rom);
+    }
+
+    Ret.next(&mut rom);
+
+    let initial_regs = random_regs(&mut build_rng(rng.gen::<usize>()));
+
+    test_rom(hw_port, emu_port, &rom, &initial_regs)?;
+
+    Ok(())
+}
+
+fn build_all_generator(rng: &mut StdRng) -> MultiGenerator {
     let mul = Mul::new(build_rng(rng.gen::<usize>()));
     let stsr_psw = StsrPsw::new(build_rng(rng.gen::<usize>()));
     let movea = Movea::new(build_rng(rng.gen::<usize>()));
@@ -1478,7 +1844,9 @@ fn multi_all<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port:
     let rev = Rev::new(build_rng(rng.gen::<usize>()));
     let xb = Xb::new(build_rng(rng.gen::<usize>()));
     let xh = Xh::new(build_rng(rng.gen::<usize>()));
-    let mut gen = MultiGenerator::new(vec![
+    let div = Div::new(build_rng(rng.gen::<usize>()));
+    let divu = Divu::new(build_rng(rng.gen::<usize>()));
+    MultiGenerator::new(vec![
         Box::new(mul),
         Box::new(stsr_psw),
         Box::new(movea),
@@ -1510,17 +1878,9 @@ fn multi_all<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port:
         Box::new(rev),
         Box::new(xb),
         Box::new(xh),
-    ], build_rng(rng.gen::<usize>()));
-
-    for _ in 0..4000 {
-        gen.next(&mut rom);
-    }
-
-    Ret.next(&mut rom);
-
-    let initial_regs = random_regs(&mut build_rng(rng.gen::<usize>()));
-
-    test_rom(hw_port, emu_port, &rom, &initial_regs)
+        Box::new(div),
+        Box::new(divu),
+    ], build_rng(rng.gen::<usize>()))
 }
 
 fn build_rng(seed: usize) -> StdRng {
@@ -1536,29 +1896,24 @@ fn random_regs(rng: &mut StdRng) -> Vec<u32> {
 fn test_rom<HwP: Read + Write, EmuP: Read + Write>(hw_port: &mut HwP, emu_port: &mut EmuP, rom: &[u8], initial_regs: &[u32]) -> Result<(), String> {
     let rom_addr = 0x05000000 + 0x0400;
 
-    {
+    /*{
         use std::fs::File;
         let mut file = File::create("derp.vxe").unwrap();
         file.write_all(&rom).unwrap();
-    }
+    }*/
 
     let hw_result_regs = test_rom_on_port(hw_port, rom, rom_addr, initial_regs).map_err(|e| format!("Hardware dispatch failed: {:?}", e))?;
     let emu_result_regs = test_rom_on_port(emu_port, rom, rom_addr, initial_regs).map_err(|e| format!("Emu dispatch failed: {:?}", e))?;
 
-    println!("regs: [");
-    for reg in emu_result_regs.iter() {
-        println!("    0x{:08x},", reg);
-    }
-    println!("],");
-
-    assert_eq(hw_result_regs, emu_result_regs)
-}
-
-fn assert_eq<T: Debug + Eq>(a: T, b: T) -> Result<(), String> {
-    if a == b {
+    if hw_result_regs == emu_result_regs {
         Ok(())
     } else {
-        Err(format!("Assert equality failed\na: {:?}\nb: {:?}", a, b))
+        Err(
+            String::from("regs (hw, emu): [") +
+            &hw_result_regs.iter().zip(emu_result_regs.iter()).fold(String::new(), |acc, (hw_reg, emu_reg)| {
+                acc + &format!("    (0x{:08x}, 0x{:08x}, {})", hw_reg, emu_reg, if hw_reg == emu_reg { "match" } else { "mismatch!" })
+            }) +
+            "],")
     }
 }
 

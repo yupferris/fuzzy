@@ -3,6 +3,15 @@ name = "fuzzy"
 version = "0.1.0"
 authors = ["ferris <yupferris@gmail.com>"]
 
+[features]
+log-core-cpu = ["rustual-boy-core/log-cpu"]
+log-core-gamepad = ["rustual-boy-core/log-gamepad"]
+log-core-ic = ["rustual-boy-core/log-ic"]
+log-core-vip = ["rustual-boy-core/log-vip"]
+log-core-vsu = ["rustual-boy-core/log-vsu"]
+log-core-other = ["rustual-boy-core/log-other"]
+log-core-all = ["rustual-boy-core/log-all"]
+
 [dependencies]
 serialport = "1.0.1"
 rustual-boy-core = { path = "../../vb-rs/rustual-boy-core" }

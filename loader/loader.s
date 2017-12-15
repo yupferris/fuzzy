@@ -99,29 +99,35 @@ _rom_title:
 interrupt_table:
 
     /* INTKEY (7FFFE00h) - Controller Interrupt */
+_interrupt_table_controller:
     reti
-    .fill   0x0E
+    .fill   0x0e
 
     /* INTTIM (7FFFE10h) - Timer Interrupt */
+_interrupt_table_timer:
     reti
-    .fill   0x0E
+    .fill   0x0e
 
     /* INTCRO (7FFFE20h) - Expansion Port Interrupt */
+_interrupt_table_expansion:
     reti
-    .fill   0x0E
+    .fill   0x0e
 
     /* INTCOM (7FFFE30h) - Link Port Interrupt */
+_interrupt_table_link:
     reti
-    .fill   0x0E
+    .fill   0x0e
 
     /* INTVPU (7FFFE40h) - Video Retrace Interrupt */
+_interrupt_table_vip:
     reti
-    .fill   0x0E
+    .fill   0x0e
 
     /* Unused vectors (7FFFE50h-7FFFF5Fh) */
-    .fill   0x010F
+    .fill   0x0110
 
     /* (7FFFF60h) - Float exception */
+_interrupt_table_float_exception:
     reti
     .fill   0x0E
 
@@ -129,33 +135,45 @@ interrupt_table:
     .fill   0x10
 
     /* (7FFFF80h) - Divide by zero exception */
+_interrupt_table_divide_by_zero:
+    /* Divide by zero will return to the current instruction, resulting in an infinite loop. */
+    /*  Assuming the instruction is 2 bytes long, add 2 to the return pc to continue on the next instruction. */
+    stsr eipc, r1
+    add 2, r1
+    ldsr r1, eipc
     reti
-    .fill   0x0E
+    .fill   0x08
 
     /* (7FFFF90h) - Invalid Opcode exception */
+_interrupt_table_invalid_opcode:
     reti
     .fill   0x0E
 
     /* (7FFFFA0h) - Trap 0 exception */
+_interrupt_table_trap_0:
     reti
     .fill   0x0E
 
     /* (7FFFFB0h) - Trap 1 exception */
+_interrupt_table_trap_1:
     reti
     .fill   0x0E
 
     /* (7FFFFC0h) - Trap Address exception */
+_interrupt_table_trap_address:
     reti
     .fill   0x0E
 
     /* (7FFFFD0h) - NMI/Duplex exception */
+_interrupt_table_nmi_duplex:
     reti
-    .fill   0x0F
+    .fill   0x0e
 
     /* Unused vector */
     .fill   0x10
 
     /* Reset Vector (7FFFFF0h) - This is how the ROM boots */
+_interrupt_table_reset:
     movhi   hi(_start), r0, r1
     movea   lo(_start), r1, r1
     jmp     [r1]
